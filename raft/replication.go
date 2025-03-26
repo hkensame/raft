@@ -31,8 +31,8 @@ func (r *Raft) replicationTicker(ctx context.Context) {
 		default:
 			log.Infof("leader节点%s的日志同步状态为: term:%d", r.selfInfo.Id, r.currentTerm)
 			log.Infof("leader节点%s发送一次replicate", r.selfInfo.Id)
-			go r.requestReplicated(ctx)
-			//go r.requestAppendEntries(ctx)
+			//go r.requestReplicated(ctx)
+			go r.requestAppendEntries(ctx)
 			time.Sleep(r.getReplicationTimeout())
 		}
 	}
@@ -142,12 +142,12 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 			log.Infof("leader提供了term为%d,index为%d的不合适的日志", req.PrevTerm, req.PrevIndex)
 
 			//寻找前一条index,并且保证找到的entry不是已经被提交的
-			for req.PrevIndex > 0 {
-				req.PrevIndex--
+			if r.nextIndex[k.Id] > 1 {
+				r.nextIndex[k.Id]--
 			}
-			r.nextIndex[k.Id] = int(req.PrevIndex) + 1
 		} else {
-			r.matchIndex[k.Id] = r.nextIndex[k.Id] + len(req.Entries)
+			//
+			r.matchIndex[k.Id] = int(req.PrevIndex) + len(req.Entries)
 			r.nextIndex[k.Id] = r.matchIndex[k.Id] + 1
 		}
 		r.sunlock()
