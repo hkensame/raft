@@ -1,0 +1,25 @@
+syntax = "proto3";
+option go_package = "./;election";
+
+service Election{
+    //处理收到的节点投票信息
+    rpc ReceiveVote(ReceiveVoteReq)returns(ReceiveVoteRes);
+};
+
+message ReceiveVoteReq{
+    //候选人的term
+    int32 candidateTerm = 1;
+    //候选人的id号
+    string candidateId = 2;
+    int32 lastLogginTerm = 3;
+    int32 lastLogginIndex = 4;
+    int32 commitIndex = 5;
+    
+};
+
+message ReceiveVoteRes{
+    //可能用于丢弃老term时期发送的投票请求
+    int32 candidatorTerm = 3;
+    int32 voterTerm = 1;
+    bool voteFor = 2;
+};

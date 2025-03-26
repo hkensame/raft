@@ -1,0 +1,45 @@
+syntax = "proto3";
+option go_package = "./;replication";
+
+service Replication{
+    rpc Replicated(ReplicatedReq)returns(ReplicatedRes);
+    rpc AppendEntries(AppendEntriesReq)returns(AppendEntriesRes);
+}
+
+message ReplicatedReq{
+    int32 leaderTerm = 1;
+    string leaderId = 2;
+};
+
+
+message ReplicatedRes{
+    int32 term = 1;
+    bool health = 2;
+};
+
+message AppendEntriesReq{
+    int32 leaderTerm = 1;
+    string leaderId = 2;
+    repeated Entry entries = 3;
+    int32 PrevIndex = 4;
+    int32 PrevTerm = 5;
+    int32 leaderCommitIndex = 6;
+};
+
+message AppendEntriesRes{
+    int32 term = 1;
+    bool health = 2;
+    bool align = 3;
+};
+
+
+message Entry{
+    CommandBody command = 1;
+    int32 term = 3;
+}
+
+message CommandBody{
+    string command = 1;
+    string data = 2;
+    bool enableError = 3;
+}
