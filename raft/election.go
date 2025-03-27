@@ -25,9 +25,7 @@ func (r *Raft) electionTicker(ctx context.Context) {
 		//如果是leader就休眠,不进行下面的检查
 		if r.smustLock(LockStatus(Leader)) {
 			r.sunlock()
-			r.tmtx.Lock()
 			r.resetElectionTicker()
-			r.tmtx.Unlock()
 			time.Sleep(r.getSleepTime())
 			continue
 		}
@@ -42,10 +40,7 @@ func (r *Raft) electionTicker(ctx context.Context) {
 			r.event(ctx, EventTimeout)
 			r.sunlock()
 
-			r.tmtx.Lock()
 			r.resetElectionTicker()
-			r.tmtx.Unlock()
-
 		}
 
 		//如果是candidator就发起一轮投票请求
@@ -75,6 +70,8 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 	if r.smustLock(LockStatus(Candidator), LockEqualTerm(int(term))) {
 		req.CandidateTerm = r.currentTerm
 		req.CandidateId = r.selfInfo.Id
+		req.LastLogginIndex = int32(len(r.persister.entries) - 1)
+		req.LastLogginTerm = int32(r.persister.entries[req.LastLogginIndex].Term)
 		r.sunlock()
 	} else {
 		log.Infof("节点%s在投票请求中发现自己的term或状态已改变,退出请求", r.selfInfo.Id)
@@ -88,19 +85,17 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 		}
 
 		//先看选票是不是已经达到成为leader的标准了,这里要调用变量leader的逻辑
-		if r.totalTickets >= getMajorityNumber(r.RaftNodesNumber) {
+		if r.totalTickets >= r.getMajorityNumber() {
 			log.Infof("节点%s已经达到成为leader的标准,成为leader", r.selfInfo.Id)
 			r.resetTerm(int(r.currentTerm))
 			go r.replicationTicker(ctx)
 			r.event(ctx, EventElected)
 			r.sunlock()
-			r.tmtx.Lock()
 			r.resetElectionTicker()
-			r.tmtx.Unlock()
 			//当选leader后会初始化节点的nextIndex和matchIndex,
 			//其中leader乐观认为所有节点都是同步的,所以会将nextIndex初始化为与自己一样的日志序号
 			for k := range r.clients {
-				r.nextIndex[k.Id] = len(r.presister.entries)
+				r.nextIndex[k.Id] = len(r.persister.entries)
 				r.matchIndex[k.Id] = 0
 			}
 			return nil
@@ -115,13 +110,13 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 		cli, err := v.Dial()
 		if err != nil {
 			r.sunlock()
-			log.Errorf("raft对端不可达,对端信息为:%s, err = %v", v.Endpoint.String(), err)
+			//log.Errorf("raft对端不可达,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
 		}
 		res, err := election.NewElectionClient(cli).ReceiveVote(ctx, req)
 		if err != nil {
 			r.sunlock()
-			log.Errorf("raft调用对端ReceiveVote函数失败,对端信息为:%s, err = %v", v.Endpoint.String(), err)
+			//log.Errorf("raft调用对端ReceiveVote函数失败,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
 		}
 
@@ -135,9 +130,7 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 		//重置自己的tiemeout等信息进入下一个选举周期,这里无论如何
 		if res.VoterTerm > r.currentTerm {
 			log.Infof("节点%s从来自%s的投票res中发现比自己大的term", r.selfInfo.Id, k.Id)
-			r.tmtx.Lock()
 			r.resetElectionTicker()
-			r.tmtx.Unlock()
 			r.resetTerm(int(res.VoterTerm))
 			r.event(ctx, EventLessTerm)
 			r.sunlock()
@@ -165,10 +158,6 @@ func (r *Raft) ReceiveVote(ctx context.Context, in *election.ReceiveVoteReq) (*e
 	}
 
 	r.slock()
-	//如果自己的commit log index大于请求者的commit log index,则哪怕它的term大于自己也不会投票
-	// if in.CommitIndex < int32(r.presister.commitIndex) {
-	// 	return res, nil
-	// }
 
 	//如果候选者的请求中term要小于自身的term则不投票
 	if in.CandidateTerm < r.currentTerm {
@@ -181,22 +170,17 @@ func (r *Raft) ReceiveVote(ctx context.Context, in *election.ReceiveVoteReq) (*e
 		r.event(ctx, EventLessTerm)
 		res.VoteFor = true
 	} else {
-		//如果term相同则若自己不是leader且未投过票则投给对端
-		//这套函数保证了candidator和同term的leader不会进入这个逻辑
-		if r.roleFsm.Current() == Leader {
+		flag := in.LastLogginTerm > int32(r.getLastTerm())
+		flag = flag || (in.LastLogginTerm == int32(r.getLastTerm()) && in.LastLogginIndex >= int32(r.getLastIndex()))
 
+		if r.roleFsm.Current() == Leader {
+			// 其次比较日志的新旧,哪怕term比自己新也不会投票
+		} else if !flag {
+			log.Infof("节点%s在来自节点%s的投票req中发现对方日志不比自己新,拒绝投票", r.selfInfo.Id, in.CandidateId)
 		} else if r.voteFor == "" {
 			log.Infof("节点%s在来自节点%s的投票req中发现与自己相当的term,且自身还未投票", r.selfInfo.Id, in.CandidateId)
 			r.voteForCandidator(in.CandidateId)
 			res.VoteFor = true
-		} else {
-			// 其次比较日志的新旧
-			flag := in.LastLogginTerm > int32(r.lastLogginTerm)
-			flag = flag || (in.LastLogginTerm == int32(r.lastLogginTerm) && in.LastLogginIndex >= int32(r.lastLogginIndex))
-			if flag {
-				r.voteForCandidator(in.CandidateId)
-				res.VoteFor = true
-			}
 		}
 	}
 	r.sunlock()
@@ -205,7 +189,5 @@ func (r *Raft) ReceiveVote(ctx context.Context, in *election.ReceiveVoteReq) (*e
 
 func (r *Raft) voteForCandidator(id string) {
 	r.voteFor = id
-	r.tmtx.Lock()
 	r.resetElectionTicker()
-	r.tmtx.Unlock()
 }

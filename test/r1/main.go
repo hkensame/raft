@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"raft/proto/replication"
 	"raft/raft"
 	"time"
 
@@ -27,8 +28,19 @@ func main() {
 	c[ep1] = c1
 	c[ep2] = c2
 
-	r := raft.MustNewRaft(ctx, "raft1", "0.0.0.0:20000", raft.WithClients(c), raft.WithRaftNodesNumber(3))
+	r := raft.MustNewRaft(ctx, "raft1", "0.0.0.0:20000", nil, raft.WithClients(c), raft.WithRaftNodesNumber(3))
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
+	go func() {
+		time.Sleep(7 * time.Second)
+		c := []*replication.CommandBody{}
+		c = append(c, &replication.CommandBody{
+			Command: "set k1 v1",
+		})
+		c = append(c, &replication.CommandBody{
+			Command: "get k1",
+		})
+		r.AddEntries(c)
+	}()
 	r.Serve()
 }

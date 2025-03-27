@@ -30,6 +30,6 @@ func WithRaftId(selfInfo *Instance) RaftOption {
 // WithRaftNodesNumber 设置 Raft 集群节点数
 func WithRaftNodesNumber(nodes int) RaftOption {
 	return func(r *Raft) {
-		r.RaftNodesNumber = nodes
+		r.raftNodesNumber = nodes
 	}
 }

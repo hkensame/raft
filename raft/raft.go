@@ -47,16 +47,10 @@ const (
 const (
 	//节点本身周期结束
 	EventTimeout = "timeout"
-	//周期结束,Leader退为Follower
-	EventExpire = "expire"
 	//Leader宕机
 	EventShotdown = "shotdown"
-	//发现集群缺少Leader,可以开始选举
-	EventElection = "election"
 	//选举结束,该节点成功当选Leader
 	EventElected = "elected"
-	//选举结束,该节点未当选成功
-	EventDisElected = "diselected"
 	//Leader心跳超时,Follower变为Candidator
 	EventHeartbeatTimeout = "heartbeat-timeout"
 	//节点收到了其他大于自己的term,此时会将自己降为follower
@@ -86,19 +80,20 @@ type Raft struct {
 	totalTickets  int
 	ticketsSource map[string]int
 
-	presister  *persister
+	persister  *persister
 	nextIndex  map[string]int
 	matchIndex map[string]int
 
-	//这两个属性用在选举中,只有以下情景会改变其值:
-	//1.在收到来自leader的日志同步时更新
-	//2.在作为leader收到client的request时更新
-	lastLogginIndex int
-	lastLogginTerm  int
+	// //这两个属性用在选举中,只有以下情景会改变其值:
+	// //1.在收到来自leader的日志同步时更新
+	// //2.在作为leader收到client的request时更新
+	// lastLogginIndex int
+	// lastLogginTerm  int
 
 	//raft会开启一个http服务接收客户端的请求
 	httpServer *httpserver.Server
-	httpChan   chan *replication.Entry
+	//这个httpChan负责从http服务端获取到收到的entry请求
+	httpChan chan *replication.Entry
 
 	//时间锁
 	tmtx sync.Mutex
@@ -110,7 +105,7 @@ type Raft struct {
 
 	//记录了该raft节点认为存在的可达的集群节点总数,包括自己
 	//无论如何,只要raft存在,这个参数一定大于0
-	RaftNodesNumber int
+	raftNodesNumber int
 
 	election.UnimplementedElectionServer
 	replication.UnimplementedReplicationServer
@@ -124,16 +119,10 @@ func NewRaftFsm() *fsm.FSM {
 			{Name: EventHeartbeatTimeout, Src: []string{Follower}, Dst: Candidator},
 			//周期结束,非leader节点转为candidator进行选举
 			{Name: EventTimeout, Src: []string{Candidator, Follower}, Dst: Candidator},
-			//选举失败,Candidate变回Follower
-			{Name: EventDisElected, Src: []string{Candidator}, Dst: Follower},
 			//选举成功,Candidate变为Leader
 			{Name: EventElected, Src: []string{Candidator}, Dst: Leader},
-			//Leader发生周期性超时(任期结束),自动降级为Follower
-			{Name: EventExpire, Src: []string{Leader}, Dst: Follower},
 			//Leader崩溃(可能用于显式触发,如优雅关闭)
 			{Name: EventShotdown, Src: []string{Leader}, Dst: Follower},
-			//发现Leader丢失,Follower主动发起选举
-			{Name: EventElection, Src: []string{Follower}, Dst: Candidator},
 			//candidator在选举中发现自己的term并非最新时更新当前term并将自己身份降为follower
 			{Name: EventLessTerm, Src: []string{Candidator, Follower, Leader}, Dst: Follower},
 			//收到任期正确(大于自身)的leader的call,无论自己是什么身份都变为follower
@@ -143,7 +132,7 @@ func NewRaftFsm() *fsm.FSM {
 	)
 }
 
-func MustNewRaft(ctx context.Context, id string, bind string, opts ...RaftOption) *Raft {
+func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replication.Entry, opts ...RaftOption) *Raft {
 	r := &Raft{
 		ctx:             ctx,
 		closed:          false,
@@ -151,11 +140,11 @@ func MustNewRaft(ctx context.Context, id string, bind string, opts ...RaftOption
 		currentTerm:     1,
 		voteFor:         "",
 		clients:         make(map[Instance]*rpcserver.Client),
-		RaftNodesNumber: 1,
+		raftNodesNumber: 1,
 		totalTickets:    0,
 		ticketsSource:   make(map[string]int),
 		selfInfo:        new(Instance),
-		presister:       mustNewPersister(),
+		persister:       mustNewPersister(),
 		nextIndex:       make(map[string]int),
 		matchIndex:      make(map[string]int),
 	}
@@ -164,6 +153,7 @@ func MustNewRaft(ctx context.Context, id string, bind string, opts ...RaftOption
 		opt(r)
 	}
 
+	r.persister.persistCond = sync.NewCond(&r.smtx)
 	if r.selfInfo.Name == "" {
 		r.selfInfo.Name = r.selfInfo.Id
 	}
@@ -179,7 +169,7 @@ func MustNewRaft(ctx context.Context, id string, bind string, opts ...RaftOption
 	)
 
 	//插入一条默认的term数据,这有利于后面左边界的判断
-	r.presister.entries = append(r.presister.entries, &replication.Entry{Term: 0, Command: nil})
+	r.persister.entries = append(r.persister.entries, &replication.Entry{Term: 0, Command: nil})
 
 	election.RegisterElectionServer(r.server.Server, r)
 	replication.RegisterReplicationServer(r.server.Server, r)
@@ -204,6 +194,7 @@ func (r *Raft) Serve() {
 				once.Do(
 					func() {
 						go r.electionTicker(ctx)
+						go r.applicationTicker(ctx)
 					},
 				)
 				select {

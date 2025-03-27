@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/hkensame/goken/pkg/log"
@@ -32,7 +33,9 @@ func (r *Raft) checkTimeout(src time.Time) bool {
 }
 
 func (r *Raft) resetElectionTicker() {
+	r.tmtx.Lock()
 	r.electionTime = time.Now().Add(r.getElectionTimeout())
+	r.tmtx.Unlock()
 }
 
 // 更新一次term,重置身份,得票情况等信息,
@@ -53,15 +56,6 @@ func (r *Raft) event(ctx context.Context, event string) {
 	}
 	log.Infof("状态机转化成功 触发的event:%s, 节点%s从%s状态转为%s", event, r.selfInfo.Id, rowStatus, r.roleFsm.Current())
 }
-
-// 更新一次term,重置身份,得票情况等信息,函数内会自动加锁
-// 注意如果指定的term已经小于节点的term,这个函数不会执行任何信息
-// func (r *Raft) resetTermAndLock(term int) {
-// 	if ok := r.lock(LockLessTerm(term)); ok {
-// 		r.resetTerm(term)
-// 	}
-// 	r.unlock()
-// }
 
 type lockOption func(r *Raft) bool
 
@@ -122,6 +116,24 @@ func (r *Raft) sunlock() {
 	r.smtx.Unlock()
 }
 
-func getMajorityNumber(n int) int {
-	return n/2 + 1
+func (r *Raft) getMajorityNumber() int {
+	return r.raftNodesNumber/2 + 1
+}
+
+func (r *Raft) getMajorityIndex() int {
+	sortMatchIndex := []int{}
+	sortMatchIndex = append(sortMatchIndex, r.getLastIndex())
+	for _, v := range r.matchIndex {
+		sortMatchIndex = append(sortMatchIndex, v)
+	}
+	sort.Ints(sortMatchIndex)
+	return sortMatchIndex[(len(sortMatchIndex)-1)/2]
+}
+
+func (r *Raft) getLastTerm() int {
+	return int(r.persister.entries[r.getLastIndex()].Term)
+}
+
+func (r *Raft) getLastIndex() int {
+	return len(r.persister.entries) - 1
 }

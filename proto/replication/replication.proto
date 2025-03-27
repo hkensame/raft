@@ -23,18 +23,21 @@ message AppendEntriesReq{
     repeated Entry entries = 3;
     int32 PrevIndex = 4;
     int32 PrevTerm = 5;
-    int32 leaderCommitIndex = 6;
+    int32 leaderPendingIndex = 6;
 };
 
 message AppendEntriesRes{
     int32 term = 1;
     bool health = 2;
     bool align = 3;
+    int32 alignIndex = 4;
+    int32 alignTerm = 5;
 };
 
 
 message Entry{
     CommandBody command = 1;
+    int32 index = 2;
     int32 term = 3;
 }
 

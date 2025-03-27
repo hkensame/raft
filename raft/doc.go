@@ -12,3 +12,9 @@ package raft
 	2.voter发现请求者的term大于自己,改term,也不会请求选举
 	3.周期timeout,term+1,将自己身份改为candidator,会请求选举
 */
+
+/*
+	raft在选举下,若收到term比自己大但是log比自己旧的请求则忽视
+	若在日志同步下收到term大于等于自己但是log比自己旧的请求则删除未提交的日志
+	上面两步保证了缺少了已提交日志的节点永远当不上leader(因为日志同步commit需要满足大多数原则)
+*/

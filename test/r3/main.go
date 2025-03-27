@@ -27,8 +27,8 @@ func main() {
 	c[ep1] = c1
 	c[ep2] = c2
 
-	r := raft.MustNewRaft(ctx, "raft3", "0.0.0.0:20002", raft.WithClients(c), raft.WithRaftNodesNumber(3))
+	r := raft.MustNewRaft(ctx, "raft3", "0.0.0.0:20002", nil, raft.WithClients(c), raft.WithRaftNodesNumber(3))
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 	r.Serve()
 }

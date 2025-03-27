@@ -13,7 +13,7 @@ message ReceiveVoteReq{
     string candidateId = 2;
     int32 lastLogginTerm = 3;
     int32 lastLogginIndex = 4;
-    int32 commitIndex = 5;
+    // int32 commitIndex = 5;
     
 };
 
