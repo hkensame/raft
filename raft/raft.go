@@ -73,8 +73,9 @@ type Raft struct {
 	closed   bool
 
 	//资源锁
-	smtx          sync.Mutex
-	roleFsm       *fsm.FSM
+	smtx    sync.Mutex
+	roleFsm *fsm.FSM
+	//这个字段应当被持久化
 	currentTerm   int32
 	voteFor       string
 	totalTickets  int
@@ -106,6 +107,8 @@ type Raft struct {
 	//记录了该raft节点认为存在的可达的集群节点总数,包括自己
 	//无论如何,只要raft存在,这个参数一定大于0
 	raftNodesNumber int
+
+	conf *RaftConf
 
 	election.UnimplementedElectionServer
 	replication.UnimplementedReplicationServer
@@ -144,15 +147,16 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 		totalTickets:    0,
 		ticketsSource:   make(map[string]int),
 		selfInfo:        new(Instance),
-		persister:       mustNewPersister(),
-		nextIndex:       make(map[string]int),
-		matchIndex:      make(map[string]int),
+
+		nextIndex:  make(map[string]int),
+		matchIndex: make(map[string]int),
 	}
 
 	for _, opt := range opts {
 		opt(r)
 	}
 
+	r.persister = mustNewPersister(r.conf.persistFile)
 	r.persister.persistCond = sync.NewCond(&r.smtx)
 	if r.selfInfo.Name == "" {
 		r.selfInfo.Name = r.selfInfo.Id

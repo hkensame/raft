@@ -1,29 +1,43 @@
 package raft
 
 import (
+	"bufio"
 	"context"
+	"os"
 	"raft/proto/replication"
 	"sync"
 
 	"github.com/hkensame/goken/pkg/log"
+	"google.golang.org/protobuf/proto"
 )
 
+// 这个结构体中所有值字段都可被持久化,pendingIndex可以考虑不持久,而是通过commitedIndex和entries计算得出
 type persister struct {
-	mtx           sync.Mutex
-	entries       []*replication.Entry
-	commitedIndex int
-	//待提交的index,这个index恒大于等于commitedIndex,但是commitedIndex是持久化的
+	mtx            sync.Mutex
+	entries        []*replication.Entry
+	commitedIndex  int
+	persistedIndex int
+	//待提交的index,这个index恒大于等于commitedIndex,但是commitedIndex是持久化的,而pendingIndex表示将要提交到的index
 	pendingIndex int
 	persistCond  *sync.Cond
 
-	raftstate []byte
-	snapshot  []byte
+	//内部应该是一个bufio.ReadWriter
+	file *os.File
+	// raftstate []byte
+	// snapshot  []byte
 }
 
-func mustNewPersister() *persister {
-	return &persister{
+func mustNewPersister(filepath string) *persister {
+	p := &persister{
 		entries: make([]*replication.Entry, 0),
 	}
+	var err error
+	p.file, err = os.OpenFile(filepath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
+	if err != nil {
+		panic(err)
+	}
+
+	return p
 }
 
 func (r *Raft) applicationTicker(ctx context.Context) {
@@ -43,21 +57,53 @@ func (r *Raft) applicationTicker(ctx context.Context) {
 
 			log.Infof("进行一次数据持久化,需要持久的entry个数为%d,预计持久后的commitIndex为%d", len(entries), r.persister.pendingIndex)
 
+			//在go携程前加锁,在go携程结束后解锁能避免后触发的持久化任务先于先触发的持久化任务
+			r.persister.mtx.Lock()
 			go func() {
 				if r.persister.persistence(entries) {
 					r.slock()
 					r.persister.commitedIndex += len(entries)
 					r.sunlock()
 				}
+				r.persister.mtx.Unlock()
 			}()
 		}
 	}
 }
 
+const blockSize = 1 << 12
+
 // 持久化提交enties,只要把一个entry持久到磁盘就永久固定了一个commitedIndex,不用担心持久化时宕机
 // TODO 在这个函数内既需要持久化entries也需要更新commitedIndex
-// 现在不需要
-func (p *persister) persistence(_ []*replication.Entry) bool {
+// 先写一个带缓冲的试试水
+func (p *persister) persistence(ent []*replication.Entry) bool {
+	start, _ := p.file.Stat()
+	initialSize := start.Size()
+	writer := bufio.NewWriterSize(p.file, blockSize)
+
+	for _, v := range ent {
+		data, err := proto.Marshal(v)
+		if err != nil {
+			log.Errorf("格式化ent失败,格式化对象为:%v", v)
+			p.file.Truncate(initialSize)
+			return false
+		}
+
+		_, err = writer.Write(data)
+		if err != nil {
+			log.Errorf("写入数据失败,对象为:%v", v)
+			p.file.Truncate(initialSize)
+			return false
+		}
+	}
+
+	err := writer.Flush()
+	if err != nil {
+		log.Errorf("刷新数据失败")
+		p.file.Truncate(initialSize)
+		return false
+	}
+	p.persistedIndex += len(ent)
 	return true
 }
 
@@ -94,51 +140,3 @@ func (r *Raft) AddEntries(c []*replication.CommandBody) {
 		r.sunlock()
 	}
 }
-
-// func clone(orig []byte) []byte {
-// 	x := make([]byte, len(orig))
-// 	copy(x, orig)
-// 	return x
-// }
-
-// func (ps *persister) Copy() *persister {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	np := mustNewPersister()
-// 	np.raftstate = ps.raftstate
-// 	np.snapshot = ps.snapshot
-// 	return np
-// }
-
-// func (ps *persister) ReadRaftState() []byte {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	return clone(ps.raftstate)
-// }
-
-// func (ps *persister) RaftStateSize() int {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	return len(ps.raftstate)
-// }
-
-// Save both Raft state and K/V snapshot as a single atomic action,
-// to help avoid them getting out of sync.
-// func (ps *persister) Save(raftstate []byte, snapshot []byte) {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	ps.raftstate = clone(raftstate)
-// 	ps.snapshot = clone(snapshot)
-// }
-
-// func (ps *persister) ReadSnapshot() []byte {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	return clone(ps.snapshot)
-// }
-
-// func (ps *persister) SnapshotSize() int {
-// 	ps.mtx.Lock()
-// 	defer ps.mtx.Unlock()
-// 	return len(ps.snapshot)
-// }

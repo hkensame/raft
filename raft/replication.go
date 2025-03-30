@@ -134,15 +134,14 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 			r.sunlock()
 			return ErrInvalidStatus
 		}
-		//日志没有对齐
-		//NOTICED 有没有可能这里如果先后发了两条请求,但是前一条未匹配的res是在后一条匹配了的res之后到达的?
-		//THINK 似乎不会出现这个问题?整个rpc函数都会被加锁诶
+		//如果日志没有对齐
 		if !res.Align {
 			log.Infof("leader节点%s从日志同步res中发现%s节点是不匹配传送的日志的", r.selfInfo.Id, k.Id)
 			log.Infof("leader提供了term为%d,index为%d的不合适的日志", req.PrevTerm, req.PrevIndex)
 
 			//如果没对齐日志而且res的最后一条日志(alignIndex)的index还比作为leader的自己大就只能寻找前一条index
 			//如果res的最后一条日志的index对于leader是存在,但是还得判断term是否也一致,不一致也只能找前一条index
+			//这里其实可以再优化一下
 			flag := res.AlignIndex > int32(r.getLastIndex()) || res.AlignTerm != r.persister.entries[res.AlignIndex].Term
 			if flag {
 				if r.nextIndex[k.Id] > 1 {
@@ -152,11 +151,11 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 				r.nextIndex[k.Id] = int(res.AlignIndex) + 1
 			}
 		} else {
-			//NOTICED 这里是否需要看leader的term和已同步的term是否一样才允许提交?
 			r.matchIndex[k.Id] = int(req.PrevIndex) + len(req.Entries)
 			r.nextIndex[k.Id] = r.matchIndex[k.Id] + 1
 			matchIndex := r.getMajorityIndex()
-			if matchIndex > r.persister.pendingIndex {
+			//如果matchIndex大于记录的待提交日志并且当前日志的term是leader的term才更新待提交日志index
+			if matchIndex > r.persister.pendingIndex && r.getLastTerm() == int(r.currentTerm) {
 				r.persister.pendingIndex = matchIndex
 				r.persister.persistCond.Signal()
 			}
