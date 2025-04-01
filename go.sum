@@ -102,6 +102,10 @@ github.com/hashicorp/go-multierror v1.1.1 h1:H5DkEtf6CXdFp0N0Em5UCwQpXMWke8IA0+l
 github.com/hashicorp/go-multierror v1.1.1/go.mod h1:iw975J/qwKPdAO1clOe2L8331t/9/fmwbPZ6JB6eMoM=
 github.com/hkensame/goken v0.0.0-20250324044039-40f16c8d8b09 h1:xz9smWQrt3UHsiq7iDPbwEfFvmBGSVZM4RiZkdTCpxY=
 github.com/hkensame/goken v0.0.0-20250324044039-40f16c8d8b09/go.mod h1:ehuDuEfsXDRfri5/qbbcKNREzSuHk7loA8h4IrU4szM=
+github.com/hkensame/goken v0.0.0-20250401110941-3bad840651c3 h1:zb+webuNmIWX3b5MR+ByXb0++Ifi/jKyIiXnokWtGkM=
+github.com/hkensame/goken v0.0.0-20250401110941-3bad840651c3/go.mod h1:CgGQOMyMlA3rGITvGOx/EhG6sWopEGbqloLjXkaefiA=
+github.com/hkensame/goken v0.0.0-20250401121212-779364bf0a1d h1:w/YNujO2X1C3ZQX0KAXIdfBpaAxVDYX4jHMKglk39ac=
+github.com/hkensame/goken v0.0.0-20250401121212-779364bf0a1d/go.mod h1:CgGQOMyMlA3rGITvGOx/EhG6sWopEGbqloLjXkaefiA=
 github.com/hpcloud/tail v1.0.0/go.mod h1:ab1qPbhIpdTxEkNHXyeSf5vhxWSCs/tWer42PpOxQnU=
 github.com/ianlancetaylor/demangle v0.0.0-20200824232613-28f6c0f3b639/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
 github.com/jinzhu/now v1.1.5 h1:/o9tlHleP7gOFmsnYNz3RGnqzefHA47wQpKrrdTIwXQ=

@@ -109,6 +109,7 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 
 		cli, err := v.Dial()
 		if err != nil {
+
 			r.sunlock()
 			log.Errorf("raft对端不可达,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue

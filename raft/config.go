@@ -5,38 +5,15 @@ import (
 )
 
 type RaftOption func(*Raft)
-type ConfOption func(*RaftConf)
 
-type RaftConf struct {
-	persistFile string
-}
-
-func MustNewDefaultRaftConf() *RaftConf {
-	return &RaftConf{}
-}
-
-func MustNewRaftConf(opts ...ConfOption) *RaftConf {
-	r := MustNewDefaultRaftConf()
-	for _, opt := range opts {
-		opt(r)
-	}
-	return r
-}
-
-func WithPersistFile(filename string) ConfOption {
-	return func(rc *RaftConf) {
-		rc.persistFile = filename
-	}
-}
-
-func WithConf(conf *RaftConf) RaftOption {
-	return func(r *Raft) {
-		r.conf = conf
+func WithPersistFile(filename string) RaftOption {
+	return func(rc *Raft) {
+		rc.filePath = filename
 	}
 }
 
 // WithClients设置Raft的客户端映射
-func WithClients(clients map[Instance]*rpcserver.Client) RaftOption {
+func WithClients(clients map[*Instance]*rpcserver.Client) RaftOption {
 	return func(r *Raft) {
 		r.clients = clients
 	}

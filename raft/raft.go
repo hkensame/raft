@@ -1,13 +1,9 @@
 package raft
 
 import (
-	//	"bytes"
-
 	"context"
 	"sync"
 	"time"
-
-	//	"course/labgob"
 
 	"raft/proto/election"
 	"raft/proto/replication"
@@ -29,19 +25,19 @@ const (
 	sleepTimeMax          time.Duration = 400 * time.Millisecond
 )
 
-// const (
-// 	electionTimeoutMax    time.Duration = 4 * time.Second
-// 	electionTimeoutMin    time.Duration = 3 * time.Second
-// 	replicationTimeoutMax time.Duration = 2 * time.Second
-// 	replicationTimeoutMin time.Duration = 1 * time.Second
-// 	sleepTimeMax          time.Duration = 2 * time.Second
-// 	sleepTimeMin          time.Duration = 1 * time.Second
-// )
-
 const (
 	Leader     = "leader"
 	Candidator = "candidator"
 	Follower   = "follower"
+)
+
+const (
+	//所有节点都是可用的
+	Avaliable int = iota
+	//存在节点宕机或不可用但是集群整体可用
+	PartialAvailable
+	//集群已经无法使用
+	UnAvaliable
 )
 
 const (
@@ -60,14 +56,16 @@ const (
 )
 
 type Instance struct {
-	Id   string
-	Name string
-	Host string
+	Id       string
+	Name     string
+	Host     string
+	HttpAddr string
+	Status   int
 }
 
 type Raft struct {
 	ctx      context.Context
-	clients  map[Instance]*rpcserver.Client
+	clients  map[*Instance]*rpcserver.Client
 	server   *rpcserver.Server
 	selfInfo *Instance
 	closed   bool
@@ -85,12 +83,6 @@ type Raft struct {
 	nextIndex  map[string]int
 	matchIndex map[string]int
 
-	// //这两个属性用在选举中,只有以下情景会改变其值:
-	// //1.在收到来自leader的日志同步时更新
-	// //2.在作为leader收到client的request时更新
-	// lastLogginIndex int
-	// lastLogginTerm  int
-
 	//raft会开启一个http服务接收客户端的请求
 	httpServer *httpserver.Server
 	//这个httpChan负责从http服务端获取到收到的entry请求
@@ -107,9 +99,7 @@ type Raft struct {
 	//记录了该raft节点认为存在的可达的集群节点总数,包括自己
 	//无论如何,只要raft存在,这个参数一定大于0
 	raftNodesNumber int
-
-	conf *RaftConf
-
+	filePath        string
 	election.UnimplementedElectionServer
 	replication.UnimplementedReplicationServer
 }
@@ -142,21 +132,22 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 		roleFsm:         NewRaftFsm(),
 		currentTerm:     1,
 		voteFor:         "",
-		clients:         make(map[Instance]*rpcserver.Client),
+		clients:         make(map[*Instance]*rpcserver.Client),
 		raftNodesNumber: 1,
 		totalTickets:    0,
 		ticketsSource:   make(map[string]int),
-		selfInfo:        new(Instance),
+		selfInfo:        &Instance{Id: id},
+		persister:       new(persister),
 
 		nextIndex:  make(map[string]int),
 		matchIndex: make(map[string]int),
+		filePath:   "./data1",
 	}
-
 	for _, opt := range opts {
 		opt(r)
 	}
 
-	r.persister = mustNewPersister(r.conf.persistFile)
+	r.persister = mustNewPersister(r.filePath)
 	r.persister.persistCond = sync.NewCond(&r.smtx)
 	if r.selfInfo.Name == "" {
 		r.selfInfo.Name = r.selfInfo.Id
@@ -171,7 +162,6 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 		rpcserver.WithServiceID(id),
 		rpcserver.WithServiceName(r.selfInfo.Name),
 	)
-
 	//插入一条默认的term数据,这有利于后面左边界的判断
 	r.persister.entries = append(r.persister.entries, &replication.Entry{Term: 0, Command: nil})
 

@@ -21,3 +21,4 @@ go.work.sum
 .env
 kill.sh
 test/
+t/

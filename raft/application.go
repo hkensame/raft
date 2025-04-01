@@ -1,13 +1,12 @@
 package raft
 
 import (
-	"bufio"
 	"context"
-	"os"
 	"raft/proto/replication"
 	"sync"
 
 	"github.com/hkensame/goken/pkg/log"
+	kpersister "github.com/hkensame/goken/pkg/persister"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -22,24 +21,19 @@ type persister struct {
 	persistCond  *sync.Cond
 
 	//内部应该是一个bufio.ReadWriter
-	file *os.File
-	// raftstate []byte
-	// snapshot  []byte
+	//file *os.File
+	manager *kpersister.BlockManager
 }
 
 func mustNewPersister(filepath string) *persister {
 	p := &persister{
 		entries: make([]*replication.Entry, 0),
 	}
-	var err error
-	p.file, err = os.OpenFile(filepath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
-	if err != nil {
-		panic(err)
-	}
-
+	p.manager = kpersister.MustNewBlockManager(filepath, 8)
 	return p
 }
 
+// 如果想要压缩日志可以在加资源锁中直接切掉要压缩的日志即可
 func (r *Raft) applicationTicker(ctx context.Context) {
 	for !r.closed {
 		select {
@@ -71,36 +65,21 @@ func (r *Raft) applicationTicker(ctx context.Context) {
 	}
 }
 
-const blockSize = 1 << 12
-
 // 持久化提交enties,只要把一个entry持久到磁盘就永久固定了一个commitedIndex,不用担心持久化时宕机
 // TODO 在这个函数内既需要持久化entries也需要更新commitedIndex
-// 先写一个带缓冲的试试水
+// 返回持久化的log数量
 func (p *persister) persistence(ent []*replication.Entry) bool {
-	start, _ := p.file.Stat()
-	initialSize := start.Size()
-	writer := bufio.NewWriterSize(p.file, blockSize)
-
 	for _, v := range ent {
-		data, err := proto.Marshal(v)
-		if err != nil {
-			log.Errorf("格式化ent失败,格式化对象为:%v", v)
-			p.file.Truncate(initialSize)
-			return false
-		}
-
-		_, err = writer.Write(data)
-		if err != nil {
-			log.Errorf("写入数据失败,对象为:%v", v)
-			p.file.Truncate(initialSize)
+		//可以记录未插入前的位置,在出错时调文件指针位置即可
+		//at:=p.manager.UsagedBlock.At()
+		data, _ := proto.Marshal(v)
+		if err := p.manager.WriteEntry(data); err != nil {
+			log.Errorf("写入数据失败 err = %v", err)
 			return false
 		}
 	}
-
-	err := writer.Flush()
-	if err != nil {
+	if err := p.manager.Flush(); err != nil {
 		log.Errorf("刷新数据失败")
-		p.file.Truncate(initialSize)
 		return false
 	}
 	p.persistedIndex += len(ent)
