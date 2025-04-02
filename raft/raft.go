@@ -41,6 +41,12 @@ const (
 )
 
 const (
+	Follow int = iota
+	Candidate
+	Disconnect
+)
+
+const (
 	//节点本身周期结束
 	EventTimeout = "timeout"
 	//Leader宕机

@@ -19,6 +19,7 @@ go.work.sum
 
 # env file
 .env
-kill.sh
+kill_raft.sh
 test/
 t/
+git.sh

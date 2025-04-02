@@ -8,6 +8,19 @@ import (
 	"github.com/hkensame/goken/pkg/log"
 )
 
+type nodeInfo struct {
+	Id       string
+	Host     string
+	HttpAddr string
+	Status   int
+}
+
+type clusterStatus struct {
+	status int
+	ins    []nodeInfo
+	reason string
+}
+
 func (r *Raft) replicationTicker(ctx context.Context) {
 	for !r.closed {
 		if !r.smustLock(LockStatus(Leader)) {
@@ -109,7 +122,7 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 
 		cli, err := v.Dial()
 		if err != nil {
-
+			k.Status = Disconnect
 			r.sunlock()
 			log.Errorf("raft对端不可达,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
@@ -122,19 +135,22 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 
 		res, err := replication.NewReplicationClient(cli).AppendEntries(r.ctx, req)
 		if err != nil {
+			k.Status = Disconnect
 			r.sunlock()
 			//log.Errorf("raft调用对端ReceiveVote函数失败,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
 		}
 
 		if res.Term > r.currentTerm {
-			//log.Infof("leader节点%s从日志同步res中发现%s节点是比自己大的term", r.selfInfo.Id, k.Id)
+			k.Status = Candidate
+			log.Infof("leader节点%s从日志同步res中发现%s节点是比自己大的term", r.selfInfo.Id, k.Id)
 			r.resetTerm(int(res.Term))
 			r.resetElectionTicker()
 			r.event(ctx, EventLessTerm)
 			r.sunlock()
 			return ErrInvalidStatus
 		}
+		k.Status = Follow
 		//如果日志没有对齐
 		if !res.Align {
 			log.Infof("leader节点%s从日志同步res中发现%s节点是不匹配传送的日志的", r.selfInfo.Id, k.Id)
@@ -246,4 +262,39 @@ func (r *Raft) AppendEntries(ctx context.Context, in *replication.AppendEntriesR
 		return res, nil
 	}
 
+}
+
+func (r *Raft) GetClusterStatus() *clusterStatus {
+	res := &clusterStatus{
+		ins: make([]nodeInfo, 0, len(r.clients)),
+	}
+	if r.roleFsm.Current() == Leader {
+		res.status = Avaliable
+		ht := 0
+		for k := range r.clients {
+			if k.Status == Candidate {
+				break
+			} else if k.Status == Follow {
+				ht++
+			}
+			res.ins = append(res.ins, nodeInfo{
+				Id:       k.Id,
+				Host:     k.Host,
+				HttpAddr: k.HttpAddr,
+			})
+		}
+		if ht < r.getMajorityNumber() {
+			res.status = UnAvaliable
+			res.reason = "多数节点宕机,无法满足大多数条件"
+		} else if ht != len(r.clients) {
+			res.status = PartialAvailable
+			res.reason = "存在节点宕机,但满足大多数条件"
+		}
+		return res
+	}
+
+	res.status = UnAvaliable
+	res.reason = "集群正在选举中,暂时不可用"
+	res.ins = nil
+	return res
 }
