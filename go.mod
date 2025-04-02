@@ -5,7 +5,7 @@ go 1.23.0
 toolchain go1.23.7
 
 require (
-	github.com/hkensame/goken v0.0.0-20250401121212-779364bf0a1d
+	github.com/hkensame/goken v0.0.0-20250402080229-7bfb8b4d0935
 	github.com/oklog/run v1.1.0
 	google.golang.org/grpc v1.71.0
 	google.golang.org/protobuf v1.36.5

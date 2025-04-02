@@ -21,13 +21,13 @@ type clusterStatus struct {
 	reason string
 }
 
-func (r *Raft) replicationTicker(ctx context.Context) {
+func (r *Raft) replicationTicker() {
 	for !r.closed {
 		if !r.smustLock(LockStatus(Leader)) {
 			log.Infof("节点%s状态已经不再是leader,退出日志同步函数", r.selfInfo.Id)
 			return
 		}
-
+		r.sunlock()
 		// select {
 		// //存在客户端请求
 		// case ent := <-r.httpChan:
@@ -36,18 +36,11 @@ func (r *Raft) replicationTicker(ctx context.Context) {
 		// default:
 		// }
 
-		r.sunlock()
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			log.Infof("leader节点%s的日志同步状态为: term:%d", r.selfInfo.Id, r.currentTerm)
-			log.Infof("leader节点%s发送一次replicate", r.selfInfo.Id)
-			//go r.requestReplicated(ctx)
-			go r.requestAppendEntries(ctx)
-			time.Sleep(r.getReplicationTimeout())
-		}
+		log.Infof("leader节点%s的日志同步状态为: term:%d", r.selfInfo.Id, r.currentTerm)
+		log.Infof("leader节点%s发送一次replicate", r.selfInfo.Id)
+		//go r.requestReplicated(ctx)
+		go r.requestAppendEntries()
+		time.Sleep(r.getReplicationTimeout())
 	}
 }
 
@@ -100,7 +93,7 @@ func (r *Raft) replicationTicker(ctx context.Context) {
 // 	return nil
 // }
 
-func (r *Raft) requestAppendEntries(ctx context.Context) error {
+func (r *Raft) requestAppendEntries() error {
 	req := &replication.AppendEntriesReq{}
 	if r.slock(LockStatus(Leader)) {
 		req.LeaderId = r.selfInfo.Id
@@ -146,7 +139,7 @@ func (r *Raft) requestAppendEntries(ctx context.Context) error {
 			log.Infof("leader节点%s从日志同步res中发现%s节点是比自己大的term", r.selfInfo.Id, k.Id)
 			r.resetTerm(int(res.Term))
 			r.resetElectionTicker()
-			r.event(ctx, EventLessTerm)
+			r.event(r.ctx, EventLessTerm)
 			r.sunlock()
 			return ErrInvalidStatus
 		}

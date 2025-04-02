@@ -1,0 +1,7 @@
+syntax = "proto3";
+option go_package = "./;application";
+
+message Metadata{
+    int32 persistedIndex = 1;
+    int32 term = 2;
+}

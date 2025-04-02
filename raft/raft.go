@@ -29,6 +29,7 @@ const (
 	Leader     = "leader"
 	Candidator = "candidator"
 	Follower   = "follower"
+	Deader     = "deader"
 )
 
 const (
@@ -49,12 +50,10 @@ const (
 const (
 	//节点本身周期结束
 	EventTimeout = "timeout"
-	//Leader宕机
+	//Leader关闭
 	EventShotdown = "shotdown"
 	//选举结束,该节点成功当选Leader
 	EventElected = "elected"
-	//Leader心跳超时,Follower变为Candidator
-	EventHeartbeatTimeout = "heartbeat-timeout"
 	//节点收到了其他大于自己的term,此时会将自己降为follower
 	EventLessTerm = "less-term"
 	//节点收到了来自leader的呼叫(这个呼叫包括选举,日志复制等)
@@ -114,14 +113,12 @@ func NewRaftFsm() *fsm.FSM {
 	return fsm.NewFSM(
 		Follower, //初始状态设为Follower
 		fsm.Events{
-			//当Leader心跳超时时,Follower变为Candidator
-			{Name: EventHeartbeatTimeout, Src: []string{Follower}, Dst: Candidator},
 			//周期结束,非leader节点转为candidator进行选举
 			{Name: EventTimeout, Src: []string{Candidator, Follower}, Dst: Candidator},
 			//选举成功,Candidate变为Leader
 			{Name: EventElected, Src: []string{Candidator}, Dst: Leader},
 			//Leader崩溃(可能用于显式触发,如优雅关闭)
-			{Name: EventShotdown, Src: []string{Leader}, Dst: Follower},
+			{Name: EventShotdown, Src: []string{Leader, Candidator, Follower}, Dst: Deader},
 			//candidator在选举中发现自己的term并非最新时更新当前term并将自己身份降为follower
 			{Name: EventLessTerm, Src: []string{Candidator, Follower, Leader}, Dst: Follower},
 			//收到任期正确(大于自身)的leader的call,无论自己是什么身份都变为follower
@@ -143,7 +140,6 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 		totalTickets:    0,
 		ticketsSource:   make(map[string]int),
 		selfInfo:        &Instance{Id: id},
-		persister:       new(persister),
 
 		nextIndex:  make(map[string]int),
 		matchIndex: make(map[string]int),
@@ -152,14 +148,15 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 	for _, opt := range opts {
 		opt(r)
 	}
+	if ok := hostgen.ValidListenHost(bind); !ok {
+		panic("非可用可绑定的host地址")
+	}
 
 	r.persister = mustNewPersister(r.filePath)
 	r.persister.persistCond = sync.NewCond(&r.smtx)
+
 	if r.selfInfo.Name == "" {
 		r.selfInfo.Name = r.selfInfo.Id
-	}
-	if ok := hostgen.ValidListenHost(bind); !ok {
-		panic("非可用可绑定的host地址")
 	}
 	r.selfInfo.Host = bind
 
@@ -168,8 +165,6 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 		rpcserver.WithServiceID(id),
 		rpcserver.WithServiceName(r.selfInfo.Name),
 	)
-	//插入一条默认的term数据,这有利于后面左边界的判断
-	r.persister.entries = append(r.persister.entries, &replication.Entry{Term: 0, Command: nil})
 
 	election.RegisterElectionServer(r.server.Server, r)
 	replication.RegisterReplicationServer(r.server.Server, r)
@@ -179,11 +174,14 @@ func MustNewRaft(ctx context.Context, id string, bind string, ch chan *replicati
 			panic(err)
 		}
 	}
+
+	r.loadMetadata()
+	r.loadEntries()
+
 	return r
 }
 
 func (r *Raft) Serve() {
-	ctx, cancel := context.WithCancel(r.ctx)
 	g := &run.Group{}
 
 	g.Add(
@@ -193,24 +191,28 @@ func (r *Raft) Serve() {
 			for !r.closed {
 				once.Do(
 					func() {
-						go r.electionTicker(ctx)
-						go r.applicationTicker(ctx)
+						go r.electionTicker()
+						go r.applicationTicker()
+						go func() {
+							for !r.closed {
+								time.Sleep(30 * time.Second)
+								r.persistMetadata()
+							}
+						}()
 					},
 				)
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					log.Infof("节点%s的状态为: term:%d,status:%s,has_leader:%t", r.selfInfo.Id, r.currentTerm, r.roleFsm.Current(), r.hasLeader)
-					time.Sleep(3 * time.Second)
-				}
+				log.Infof("节点%s的状态为: term:%d,status:%s,has_leader:%t", r.selfInfo.Id, r.currentTerm, r.roleFsm.Current(), r.hasLeader)
+				time.Sleep(3 * time.Second)
 			}
-			cancel()
-			r.closed = true
 			return nil
 		},
+
 		func(err error) {
-			cancel()
+			r.Close()
+			time.Sleep(3 * time.Second)
+			r.roleFsm.SetState(Deader)
+			log.Info("[raft] 节点正常关闭")
+			r.persistMetadata()
 		},
 	)
 
@@ -222,9 +224,8 @@ func (r *Raft) Serve() {
 			}
 			return nil
 		},
-		func(err error) {
-			r.server.GracefulStop()
-		},
+
+		func(err error) {},
 	)
 
 	g.Run()

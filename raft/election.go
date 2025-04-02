@@ -19,7 +19,7 @@ var (
 	ErrInvalidStatus = errors.New("失效的状态,无法进行之后的逻辑")
 )
 
-func (r *Raft) electionTicker(ctx context.Context) {
+func (r *Raft) electionTicker() {
 	//先记录选举请求的初始状态
 	for !r.closed {
 		//如果是leader就休眠,不进行下面的检查
@@ -37,34 +37,27 @@ func (r *Raft) electionTicker(ctx context.Context) {
 			r.resetTerm(int(r.currentTerm + 1))
 			r.voteFor = r.selfInfo.Id
 			r.totalTickets = 1
-			r.event(ctx, EventTimeout)
+			r.event(r.ctx, EventTimeout)
 			r.sunlock()
-
 			r.resetElectionTicker()
 		}
 
 		//如果是candidator就发起一轮投票请求
 		if r.smustLock(LockStatus(Candidator)) {
-			log.Infof("节点%s的选举状态为: term:%d", r.selfInfo.Id, r.currentTerm)
-			log.Infof("节点%s发起一轮投票请求", r.selfInfo.Id)
+			log.Infof("节点%s发起一轮投票请求,选举状态为: term:%d", r.selfInfo.Id, r.currentTerm)
 			term := int(r.currentTerm)
-			go r.requestVote(ctx, term)
+			go r.requestVote(term)
 			r.sunlock()
 			time.Sleep(r.getSleepTime())
 		} else {
 			//如果不是candidator就休眠
 			log.Infof("节点%s已不再是candidator,进入休眠", r.selfInfo.Id)
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(r.getSleepTime())
-			}
+			time.Sleep(r.getSleepTime())
 		}
 	}
 }
 
-func (r *Raft) requestVote(ctx context.Context, term int) error {
+func (r *Raft) requestVote(term int) error {
 	req := &election.ReceiveVoteReq{}
 	//检查条件,是否是candidator并且term是否发生变化
 	if r.smustLock(LockStatus(Candidator), LockEqualTerm(int(term))) {
@@ -74,13 +67,11 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 		req.LastLogginTerm = int32(r.persister.entries[req.LastLogginIndex].Term)
 		r.sunlock()
 	} else {
-		log.Infof("节点%s在投票请求中发现自己的term或状态已改变,退出请求", r.selfInfo.Id)
 		return ErrInvalidStatus
 	}
 
 	for k, v := range r.clients {
 		if !r.smustLock(LockStatus(Candidator), LockEqualTerm(int(term))) {
-			log.Infof("节点%s在投票请求中发现自己的term或状态已改变,退出请求", r.selfInfo.Id)
 			return ErrInvalidStatus
 		}
 
@@ -88,8 +79,8 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 		if r.totalTickets >= r.getMajorityNumber() {
 			log.Infof("节点%s已经达到成为leader的标准,成为leader", r.selfInfo.Id)
 			r.resetTerm(int(r.currentTerm))
-			go r.replicationTicker(ctx)
-			r.event(ctx, EventElected)
+			go r.replicationTicker()
+			r.event(r.ctx, EventElected)
 			r.sunlock()
 			r.resetElectionTicker()
 			//当选leader后会初始化节点的nextIndex和matchIndex,
@@ -113,26 +104,28 @@ func (r *Raft) requestVote(ctx context.Context, term int) error {
 			//log.Errorf("raft对端不可达,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
 		}
-		res, err := election.NewElectionClient(cli).ReceiveVote(ctx, req)
+		res, err := election.NewElectionClient(cli).ReceiveVote(r.ctx, req)
 		if err != nil {
 			r.sunlock()
 			//log.Errorf("raft调用对端ReceiveVote函数失败,对端信息为:%s, err = %v", v.Endpoint.String(), err)
 			continue
 		}
 
-		//如果收到的res是自身之前term发送的请求应当舍去,这可以在res中冗余一个candidatorTerm来识别
+		// 如果收到的res是自身之前term发送的请求应当舍去,
+		// 这可以在res中冗余一个candidatorTerm来识别
 		if res.CandidatorTerm < r.currentTerm {
 			r.sunlock()
 			continue
 		}
 
-		//如果raft节点发现自己的term小于其它节点的term,会立马更新自己的term并降为follower,随后将自己得到的选票清零,重置自己的选票
-		//重置自己的tiemeout等信息进入下一个选举周期,这里无论如何
+		// 如果raft节点发现自己的term小于其它节点的term,会立马更新自己的term并降为follower,
+		// 随后将自己得到的选票清零,重置自己的选票
+		// 重置自己的tiemeout等信息进入下一个选举周期,这里无论如何
 		if res.VoterTerm > r.currentTerm {
 			log.Infof("节点%s从来自%s的投票res中发现比自己大的term", r.selfInfo.Id, k.Id)
 			r.resetElectionTicker()
 			r.resetTerm(int(res.VoterTerm))
-			r.event(ctx, EventLessTerm)
+			r.event(r.ctx, EventLessTerm)
 			r.sunlock()
 			return nil
 		} else {
@@ -158,27 +151,23 @@ func (r *Raft) ReceiveVote(ctx context.Context, in *election.ReceiveVoteReq) (*e
 	}
 
 	r.slock()
+	//flag为true表示candidator的日志新于自己
+	flag := in.LastLogginTerm > int32(r.getLastTerm())
+	flag = flag || (in.LastLogginTerm == int32(r.getLastTerm()) && in.LastLogginIndex >= int32(r.getLastIndex()))
 
 	//如果候选者的请求中term要小于自身的term则不投票
 	if in.CandidateTerm < r.currentTerm {
 		res.VoterTerm = r.currentTerm
+	} else if !flag {
+		//如果candidator日志不如自己新会进入这个空else
 	} else if in.CandidateTerm > r.currentTerm {
-		log.Infof("节点%s从来自节点%s的投票req中发现比自己大的term", r.selfInfo.Id, in.CandidateId)
-		//如果候选者的term大于自身则更新自己的term,timeout,如果自身为candidator则清空candidator内的信息
 		r.voteForCandidator(in.CandidateId)
 		r.resetTerm(int(in.CandidateTerm))
-		r.event(ctx, EventLessTerm)
+		r.event(r.ctx, EventLessTerm)
 		res.VoteFor = true
 	} else {
-		flag := in.LastLogginTerm > int32(r.getLastTerm())
-		flag = flag || (in.LastLogginTerm == int32(r.getLastTerm()) && in.LastLogginIndex >= int32(r.getLastIndex()))
-
 		if r.roleFsm.Current() == Leader {
-			// 其次比较日志的新旧,哪怕term比自己新也不会投票
-		} else if !flag {
-			log.Infof("节点%s在来自节点%s的投票req中发现对方日志不比自己新,拒绝投票", r.selfInfo.Id, in.CandidateId)
 		} else if r.voteFor == "" {
-			log.Infof("节点%s在来自节点%s的投票req中发现与自己相当的term,且自身还未投票", r.selfInfo.Id, in.CandidateId)
 			r.voteForCandidator(in.CandidateId)
 			res.VoteFor = true
 		}

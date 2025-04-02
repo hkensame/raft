@@ -3,10 +3,13 @@ package raft
 import (
 	"context"
 	"math/rand"
+	"raft/proto/application"
+	"raft/proto/replication"
 	"sort"
 	"time"
 
 	"github.com/hkensame/goken/pkg/log"
+	"google.golang.org/protobuf/proto"
 )
 
 var electionRange = int64(electionTimeoutMax - electionTimeoutMin)
@@ -136,4 +139,61 @@ func (r *Raft) getLastTerm() int {
 
 func (r *Raft) getLastIndex() int {
 	return len(r.persister.entries) - 1
+}
+
+func (r *Raft) marshal() []byte {
+	a := &application.Metadata{}
+	a.PersistedIndex = int32(r.persister.persistedIndex)
+	a.Term = r.currentTerm
+	b, _ := proto.Marshal(a)
+	return b
+}
+
+func (r *Raft) unmarshal(b []byte) {
+	a := &application.Metadata{}
+	proto.Unmarshal(b, a)
+	r.persister.persistedIndex = int(a.PersistedIndex)
+	r.persister.commitedIndex = r.persister.persistedIndex
+	r.persister.pendingIndex = r.persister.persistedIndex
+	r.currentTerm = a.Term
+}
+
+func (rf *Raft) loadMetadata() {
+	b, err := rf.persister.manager.GetCustomData()
+	if err != nil {
+		panic(err)
+	}
+	if err := rf.persister.manager.LoadHeaderData(); err != nil {
+		panic(err)
+
+	}
+	//如果不是新建的raft节点就反序列化
+	if b != nil && len(b) != 0 {
+		rf.unmarshal(b)
+	}
+
+	rf.persister.entries = make([]*replication.Entry, 0, rf.persister.persistedIndex)
+	rf.persister.entries = append(rf.persister.entries, &replication.Entry{Term: 0, Command: nil, Index: 0})
+	log.Infof("metadata 载入成功 term:%d,commitedIndex:%d", rf.currentTerm, rf.persister.commitedIndex)
+}
+
+func (rf *Raft) loadEntries() {
+	reader := rf.persister.manager.ReadBlockEntries()
+	for {
+		data, err := reader.Next()
+		if err != nil {
+			panic(err)
+		}
+		if data == nil {
+			break
+		}
+		for _, v := range data {
+			ent := &replication.Entry{}
+			if err := proto.Unmarshal(v, ent); err != nil {
+				panic(err)
+			}
+			rf.persister.entries = append(rf.persister.entries, ent)
+		}
+	}
+	log.Infof("entries 载入成功 size:%d", len(rf.persister.entries)-1)
 }
